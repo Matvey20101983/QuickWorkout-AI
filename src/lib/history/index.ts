@@ -19,6 +19,30 @@ export interface HistoryStats {
 }
 
 const STORAGE_KEY = 'quickworkout_history';
+const DAY_MS = 86_400_000;
+
+/** Локальна дата у форматі YYYY-MM-DD (без UTC-зсуву). */
+export function toDateKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/** Парсить YYYY-MM-DD як локальну дату, а не UTC. */
+function parseDateKey(key: string): Date {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+
+function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+/** Різниця в повних днях між локальними півночами. */
+function dayDiff(a: Date, b: Date): number {
+  return Math.round((startOfDay(a).getTime() - startOfDay(b).getTime()) / DAY_MS);
+}
 
 function getStored(): HistoryEntry[] {
   if (typeof window === 'undefined') return [];
@@ -40,7 +64,7 @@ function saveStored(entries: HistoryEntry[]) {
 }
 
 export function addWorkout(entry: Omit<HistoryEntry, 'date'>): HistoryEntry {
-  const date = new Date().toISOString().split('T')[0];
+  const date = toDateKey(new Date());
   const newEntry: HistoryEntry = { date, ...entry };
   const entries = [newEntry, ...getStored()].slice(0, 100); // зберігаємо останні 100
   saveStored(entries);
@@ -70,55 +94,54 @@ export function getStats(): HistoryStats {
   const totalMinutes = entries.reduce((sum, e) => sum + e.duration, 0);
   const totalCalories = entries.reduce((sum, e) => sum + e.calories, 0);
 
-  // streaks
-  // сортуємо за датою (найновіше перше — уже маємо так з getStored, але на всякий випадок)
-  const sorted = [...entries].sort((a, b) => b.date.localeCompare(a.date));
-  let currentStreak = 0;
-  let longestStreak = 0;
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  yesterday.setHours(0, 0, 0, 0);
+  // streaks рахуємо за унікальними днями, а не за кількістю записів
+  const uniqueDays = [...new Set(entries.map((e) => e.date))].sort((a, b) =>
+    b.localeCompare(a),
+  );
 
-  // считаємо current streak
-  for (let i = 0; i < sorted.length; i++) {
-    const d = new Date(sorted[i].date);
-    if (d >= yesterday && d < new Date()) {
-      currentStreak++;
-    } else {
-      break;
+  let currentStreak = 0;
+  const latest = parseDateKey(uniqueDays[0]);
+  // Стрік триває, якщо останнє тренування було сьогодні або вчора
+  if (dayDiff(new Date(), latest) <= 1) {
+    currentStreak = 1;
+    let prev = latest;
+    for (let i = 1; i < uniqueDays.length; i++) {
+      const d = parseDateKey(uniqueDays[i]);
+      if (dayDiff(prev, d) === 1) {
+        currentStreak += 1;
+        prev = d;
+      } else {
+        break;
+      }
     }
   }
 
-  // longest streak — просто цикл по дням
-  let prevDate: Date | null = null;
-  let streakSoFar = 0;
-  for (const e of sorted) {
-    const d = new Date(e.date);
-    if (prevDate === null) {
-      streakSoFar = 1;
+  // найдовша серія — послідовні дні у спадному порядку
+  let longestStreak = 1;
+  let streakSoFar = 1;
+  for (let i = 1; i < uniqueDays.length; i++) {
+    const prev = parseDateKey(uniqueDays[i - 1]);
+    const cur = parseDateKey(uniqueDays[i]);
+    if (dayDiff(prev, cur) === 1) {
+      streakSoFar += 1;
     } else {
-      const diffDays = Math.ceil((d.getTime() - prevDate.getTime()) / (86400000));
-      if (diffDays <= 1) {
-        streakSoFar++;
-      } else {
-        longestStreak = Math.max(longestStreak, streakSoFar);
-        streakSoFar = 1;
-      }
+      longestStreak = Math.max(longestStreak, streakSoFar);
+      streakSoFar = 1;
     }
-    prevDate = d;
   }
   longestStreak = Math.max(longestStreak, streakSoFar);
 
-  //last7Days
-  const sevenDaysAgo = new Date();
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
-  const last7Days = sorted.filter((e) => {
-    const d = new Date(e.date);
-    return d >= sevenDaysAgo && d <= new Date();
+  // останні 7 днів включно з сьогодні (з локальної півночі)
+  const weekStart = startOfDay(new Date());
+  weekStart.setDate(weekStart.getDate() - 6);
+  const now = new Date();
+  const last7Days = entries.filter((e) => {
+    const d = parseDateKey(e.date);
+    return d >= weekStart && d <= now;
   }).length;
 
-  //last training
-  const last = sorted[0];
+  // last training
+  const last = entries.find((e) => e.date === uniqueDays[0]);
   const lastTraining = last ? `${last.date} — ${last.duration} хв` : null;
 
   return {

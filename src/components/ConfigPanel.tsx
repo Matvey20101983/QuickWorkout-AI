@@ -1,4 +1,4 @@
-import { Battery, Timer, Target, Dumbbell, Zap, Loader2 } from 'lucide-react';
+import { Battery, Timer, Target, Dumbbell, Zap, X } from 'lucide-react';
 import {
   DURATION_OPTIONS,
   ENERGY_LABELS,
@@ -16,6 +16,7 @@ interface Props {
   zone: TargetZone;
   setZone: (z: TargetZone) => void;
   onGenerate: () => void;
+  onCancel: () => void;
   loading: boolean;
   hasApiKey: boolean;
 }
@@ -30,6 +31,7 @@ export default function ConfigPanel({
   zone,
   setZone,
   onGenerate,
+  onCancel,
   loading,
   hasApiKey,
 }: Props) {
@@ -157,14 +159,14 @@ export default function ConfigPanel({
 
       {/* Generate button */}
       <button
-        onClick={onGenerate}
-        disabled={loading}
-        className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-2xl bg-gradient-to-r from-acid to-neon px-4 py-4 text-base font-black uppercase tracking-wider text-ink-900 shadow-acid-glow transition hover:brightness-110 active:scale-[0.98] disabled:cursor-wait disabled:opacity-80 sm:px-6 sm:py-5 sm:text-lg"
+        onClick={loading ? onCancel : onGenerate}
+        aria-busy={loading}
+        className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-2xl bg-gradient-to-r from-acid to-neon px-4 py-4 text-base font-black uppercase tracking-wider text-ink-900 shadow-acid-glow transition hover:brightness-110 active:scale-[0.98] sm:px-6 sm:py-5 sm:text-lg"
       >
         {loading ? (
           <>
-            <Loader2 className="animate-spin" size={22} />
-            Генеруємо...
+            <X size={22} />
+            Скасувати генерацію
           </>
         ) : (
           <>

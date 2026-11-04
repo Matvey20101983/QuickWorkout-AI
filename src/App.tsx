@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Activity, AlertTriangle, Dumbbell, Key, RotateCcw, Sparkles, Timer, Zap } from 'lucide-react';
 import ApiKeyModal from '@/components/ApiKeyModal';
 import ConfigPanel from '@/components/ConfigPanel';
-import WorkoutSession from '@/components/WorkoutSession';
+import WorkoutSession, { type WorkoutMeta } from '@/components/WorkoutSession';
 import { generateWorkoutWithFallback } from '@/lib/openrouter';
-import { supabase } from '@/lib/supabase';
+import { getSupabaseUserId, supabase } from '@/lib/supabase';
 import type {
   DurationOption,
   EnergyLevel,
@@ -14,7 +14,7 @@ import type {
 
 type Screen = 'config' | 'success' | 'error';
 
-// Supabase storage key for API key
+// Ключ зберігається лише локально й ніколи не надсилається в Supabase
 const API_KEY_STORAGE = 'quickworkout_supabase_key';
 
 export default function App() {
@@ -27,80 +27,99 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [source, setSource] = useState<'ai' | 'mock' | null>(null);
   const [modelLabel, setModelLabel] = useState<string | null>(null);
+  const [meta, setMeta] = useState<WorkoutMeta | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [showKeyModal, setShowKeyModal] = useState(false);
+  const [userId, setUserId] = useState<string | null>(null);
+
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    // Try to get from Supabase first, fallback to localStorage
-    supabase.from('api_keys').select('key').eq('user_id', 'current-user').then(({ data }) => {
-      if (data?.length) {
-        setApiKey(data[0].key);
-      } else {
-        // Fallback to localStorage
-        const saved = localStorage.getItem(API_KEY_STORAGE);
-        if (saved) setApiKey(saved);
-      }
+    // Ключ завжди доступний локально, без мережі
+    const saved = localStorage.getItem(API_KEY_STORAGE);
+    if (saved) setApiKey(saved);
+
+    // Анонімна сесія потрібна лише для синхронізації історії (якщо Supabase налаштований)
+    let cancelled = false;
+    getSupabaseUserId().then((id) => {
+      if (!cancelled) setUserId(id);
     });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  async function saveApiKey(key: string) {
-    if (key) {
-      // Save to Supabase
-      const { error } = await supabase.from('api_keys').upsert({
-        user_id: 'current-user',
-        key,
-        updated_at: new Date().toISOString(),
-      });
-      if (!error) {
-        setApiKey(key);
-      }
+  function saveApiKey(key: string) {
+    const trimmed = key.trim();
+    if (trimmed) {
+      localStorage.setItem(API_KEY_STORAGE, trimmed);
+      setApiKey(trimmed);
     } else {
-      // Remove from Supabase
-      await supabase.from('api_keys').delete().eq('user_id', 'current-user');
-      // Also clear localStorage fallback
       localStorage.removeItem(API_KEY_STORAGE);
       setApiKey(null);
     }
   }
 
   async function handleGenerate() {
-    // Error state if zone not picked — zone always has a default, but keep guard
     if (!zone || !duration || !energy) {
       setScreen('error');
       return;
     }
 
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
     setScreen('config');
+    setAiError(null);
     try {
-      const { workout: w, source: s, modelLabel: m } = await generateWorkoutWithFallback(
+      const result = await generateWorkoutWithFallback(
         { energy, duration, zone },
         apiKey,
+        controller.signal,
       );
-      setWorkout(w);
-      setSource(s);
-      setModelLabel(m);
+      if (controller.signal.aborted) return;
+
+      setWorkout(result.workout);
+      setSource(result.source);
+      setModelLabel(result.modelLabel);
+      setAiError(result.aiError);
+      setMeta({ zone, source: result.source, modelLabel: result.modelLabel });
       setScreen('success');
 
-      // Зберегти тренування у історію Supabase
-      if (apiKey) {
-        await supabase.from('workouts').insert({
-          user_id: 'current-user',
-          energy,
-          duration,
-          zone,
-          source: s,
-          model_label: m,
-          workout_data: w,
-          created_at: new Date().toISOString(),
-        });
+      // Історія в Supabase — необов'язкова синхронізація, не блокує UI
+      if (supabase && userId) {
+        supabase
+          .from('workouts')
+          .insert({
+            user_id: userId,
+            energy,
+            duration,
+            zone,
+            source: result.source,
+            model_label: result.modelLabel,
+            workout_data: result.workout,
+          })
+          .then(({ error }) => {
+            if (error) console.warn('Supabase workout sync failed:', error.message);
+          });
       }
-    } catch {
+    } catch (err) {
+      if (controller.signal.aborted || (err as Error)?.name === 'AbortError') return;
+      console.error('Workout generation failed:', err);
       setScreen('error');
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setLoading(false);
     }
+  }
+
+  function handleCancel() {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+    setScreen('config');
   }
 
   function handleReset() {
@@ -108,6 +127,8 @@ export default function App() {
     setWorkout(null);
     setSource(null);
     setModelLabel(null);
+    setMeta(null);
+    setAiError(null);
   }
 
   function handleErrorReset() {
@@ -204,6 +225,7 @@ export default function App() {
               zone={zone}
               setZone={setZone}
               onGenerate={handleGenerate}
+              onCancel={handleCancel}
               loading={loading}
               hasApiKey={!!apiKey}
             />
@@ -213,6 +235,15 @@ export default function App() {
         {/* SUCCESS STATE */}
         {screen === 'success' && workout && (
           <div className="animate-fade-up">
+            {source === 'mock' && aiError && (
+              <div className="mb-4 flex items-start gap-2 rounded-xl border border-orange-500/40 bg-orange-500/10 p-3 text-xs text-orange-200">
+                <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                <span>
+                  AI не зміг згенерувати тренування ({aiError}). Показано резервний
+                  комплекс. Перевірте API-ключ або спробуйте пізніше.
+                </span>
+              </div>
+            )}
             <div className="mb-5 flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
                 <Sparkles className="shrink-0 text-acid" size={20} />
@@ -234,7 +265,11 @@ export default function App() {
                 <RotateCcw size={14} /> Заново
               </button>
             </div>
-            <WorkoutSession workout={workout} onReset={handleReset} />
+            <WorkoutSession
+              workout={workout}
+              meta={meta ?? { zone, source: source ?? 'mock', modelLabel }}
+              onReset={handleReset}
+            />
           </div>
         )}
 
@@ -260,8 +295,8 @@ export default function App() {
       </main>
 
       <footer className="safe-bottom safe-x mx-auto mt-10 max-w-3xl px-4 pb-4 text-center text-xs text-gray-600 sm:px-6">
-        QuickWorkout AI · {apiKey ? 'AI-режим активний (Supabase)' : 'Резервний банк вправ'} ·
-        <a href="https://supabase.io" target="_blank" rel="noopener" className="underline underline-offset-2 text-gray-300 hover:text-acid ml-2">
+        QuickWorkout AI · {apiKey ? 'AI-режим активний' : 'Резервний банк вправ'} ·
+        <a href="https://openrouter.ai/docs" target="_blank" rel="noopener" className="underline underline-offset-2 text-gray-300 hover:text-acid ml-2">
           Docs
         </a>
         Памʼятай: перед тренуванням розігрійся.

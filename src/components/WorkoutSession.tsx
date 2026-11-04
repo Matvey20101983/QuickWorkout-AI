@@ -1,6 +1,6 @@
 ﻿import { useCallback, useEffect, useRef, useState } from 'react';
 import { Play, Pause, SkipForward, RotateCcw, Check, Flame, Quote } from 'lucide-react';
-import type { Workout } from '@/lib/types';
+import type { TargetZone, Workout } from '@/lib/types';
 import {
   playCountdownBeep,
   playStartBeep,
@@ -9,35 +9,40 @@ import {
 } from '@/lib/sound';
 import { addWorkout } from '@/lib/history';
 
+export interface WorkoutMeta {
+  zone: TargetZone;
+  source: 'ai' | 'mock';
+  modelLabel: string | null;
+}
+
 interface Props {
   workout: Workout;
+  meta: WorkoutMeta;
   onReset: () => void;
 }
 
 type Phase = 'idle' | 'work' | 'rest' | 'done';
 
-export default function WorkoutSession({ workout, onReset }: Props) {
+export default function WorkoutSession({ workout, meta, onReset }: Props) {
   const [index, setIndex] = useState(0);
   const [phase, setPhase] = useState<Phase>('idle');
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [completed, setCompleted] = useState<boolean[]>([]);
   const [skipped, setSkipped] = useState(false);
-  const [voiceEnabled, setVoiceEnabled] = useState(true);
 
   const indexRef = useRef(index);
   const phaseRef = useRef(phase);
+  const skippedRef = useRef(false);
+  const savedRef = useRef(false);
+  const deadlineRef = useRef<number | null>(null);
   indexRef.current = index;
   phaseRef.current = phase;
 
-  const current = workout.exercises[index];
   const totalSeconds = workout.exercises.reduce(
     (sum, ex) => sum + ex.workSeconds + ex.restSeconds,
     0,
   );
-  const totalLabel =
-    totalSeconds < 60 ? `${totalSeconds} с` : `${Math.round(totalSeconds / 60)} хв`;
-
   const phaseLabel =
     phase === 'work'
       ? 'ПРАЦЮЄМО'
@@ -50,6 +55,27 @@ export default function WorkoutSession({ workout, onReset }: Props) {
   const phaseColor =
     phase === 'work' ? '#22c55e' : phase === 'rest' ? '#06b6d4' : phase === 'done' ? '#4ade80' : '#9ca3af';
 
+  const complete = useCallback(() => {
+    setCompleted(workout.exercises.map(() => true));
+    setPhase('done');
+    setIsRunning(false);
+    deadlineRef.current = null;
+    playFinishBeep();
+
+    // Історія пишеться рівно один раз — і після таймера, і після «Пропустити»
+    if (!savedRef.current) {
+      savedRef.current = true;
+      addWorkout({
+        duration: Math.max(1, Math.round(totalSeconds / 60)),
+        zone: meta.zone,
+        calories: workout.estimatedCalories,
+        modelLabel: meta.modelLabel,
+        source: meta.source,
+        skipped: skippedRef.current,
+      });
+    }
+  }, [workout, meta, totalSeconds]);
+
   const advance = useCallback(() => {
     const i = indexRef.current;
     const p = phaseRef.current;
@@ -58,47 +84,38 @@ export default function WorkoutSession({ workout, onReset }: Props) {
     if (p === 'work' && ex.restSeconds > 0) {
       setPhase('rest');
       setSecondsLeft(ex.restSeconds);
+      deadlineRef.current = null;
       playRestStartBeep();
-    } else if (p === 'work') {
-      if (i < workout.exercises.length - 1) {
-        const next = workout.exercises[i + 1];
-        setIndex(i + 1);
-        setPhase('work');
-        setSecondsLeft(next.workSeconds);
-        playStartBeep();
-      } else {
-        setCompleted(workout.exercises.map(() => true));
-        setPhase('done');
-        setIsRunning(false);
-        playFinishBeep();
-      }
-    } else {
-      // rest
-      if (i < workout.exercises.length - 1) {
-        const next = workout.exercises[i + 1];
-        setIndex(i + 1);
-        setPhase('work');
-        setSecondsLeft(next.workSeconds);
-        playStartBeep();
-      } else {
-        setCompleted(workout.exercises.map(() => true));
-        setPhase('done');
-        setIsRunning(false);
-        playFinishBeep();
-      }
+      return;
     }
-  }, [workout]);
 
-  // countdown tick
+    if (i < workout.exercises.length - 1) {
+      const next = workout.exercises[i + 1];
+      setIndex(i + 1);
+      setPhase('work');
+      setSecondsLeft(next.workSeconds);
+      deadlineRef.current = null;
+      playStartBeep();
+    } else {
+      complete();
+    }
+  }, [workout, complete]);
+
+  // Відлік за реальним часом, а не накопичувальним декрементом
   useEffect(() => {
     if (!isRunning || phase === 'idle' || phase === 'done') return;
     if (secondsLeft <= 0) {
       advance();
       return;
     }
+    if (deadlineRef.current === null) {
+      deadlineRef.current = Date.now() + secondsLeft * 1000;
+    }
     const id = window.setInterval(() => {
-      setSecondsLeft((prev) => Math.max(0, prev - 1));
-    }, 1000);
+      const deadline = deadlineRef.current;
+      if (deadline === null) return;
+      setSecondsLeft(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
+    }, 250);
     return () => window.clearInterval(id);
   }, [isRunning, phase, secondsLeft, advance]);
 
@@ -145,6 +162,9 @@ export default function WorkoutSession({ workout, onReset }: Props) {
 
   function handleStart() {
     const first = workout.exercises[0];
+    savedRef.current = false;
+    skippedRef.current = false;
+    deadlineRef.current = null;
     setIndex(0);
     setPhase('work');
     setSecondsLeft(first.workSeconds);
@@ -154,6 +174,8 @@ export default function WorkoutSession({ workout, onReset }: Props) {
   }
 
   function handlePause() {
+    // Фіксуємо залишок, щоб після паузи відлік не стрибнув
+    deadlineRef.current = null;
     setIsRunning(false);
   }
 
@@ -170,45 +192,24 @@ export default function WorkoutSession({ workout, onReset }: Props) {
       return;
     }
     setSkipped(true);
+    skippedRef.current = true;
     if (p === 'work' && ex.restSeconds > 0) {
       setPhase('rest');
       setSecondsLeft(ex.restSeconds);
+      deadlineRef.current = null;
       playRestStartBeep();
-    } else if (p === 'work' || p === 'rest') {
-      if (i < workout.exercises.length - 1) {
-        const next = workout.exercises[i + 1];
-        setIndex(i + 1);
-        setPhase('work');
-        setSecondsLeft(next.workSeconds);
-        playStartBeep();
-      } else {
-        setCompleted(workout.exercises.map(() => true));
-        setPhase('done');
-        setIsRunning(false);
-        playFinishBeep();
-        // збереження в історію
-        const duration = workout.exercises.reduce(
-          (sum, ex) => sum + ex.workSeconds + ex.restSeconds,
-          0,
-        ) / 60;
-        const calories = workout.estimatedCalories;
-        const modelLabel = /* немає моделі у mock, але можна покласти null */ null;
-        const source = 'mock';
-        const skippedFlag = true;
-        addWorkout({ duration, zone: 'full_body', calories, modelLabel, source, skipped: skippedFlag });
-      }
+    } else if (i < workout.exercises.length - 1) {
+      const next = workout.exercises[i + 1];
+      setIndex(i + 1);
+      setPhase('work');
+      setSecondsLeft(next.workSeconds);
+      deadlineRef.current = null;
+      playStartBeep();
+    } else {
+      complete();
     }
   }
 
-  const fullDuration =
-    phase === 'work'
-      ? (current?.workSeconds ?? 1)
-      : phase === 'rest'
-        ? (current?.restSeconds ?? 1)
-        : 1;
-  const progress = phase === 'idle' || phase === 'done' ? 1 : secondsLeft / fullDuration;
-  const R = 130;
-  const C = 2 * Math.PI * R;
   const paused = (phase === 'work' || phase === 'rest') && !isRunning;
 
   return (

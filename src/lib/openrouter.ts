@@ -1,4 +1,4 @@
-import type { Workout, WorkoutConfig } from './types';
+import type { Exercise, Workout, WorkoutConfig } from './types';
 import { generateMockWorkout } from './mockBank';
 
 export const AI_MODELS = [
@@ -14,6 +14,8 @@ export interface GeneratedWorkout {
   workout: Workout;
   source: 'ai' | 'mock';
   modelLabel: string | null;
+  /** Причина, чому AI не спрацював (null, якщо AI відповів або ключа немає). */
+  aiError: string | null;
 }
 
 const ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
@@ -49,19 +51,49 @@ function buildPrompt(config: WorkoutConfig): string {
 Тривалість роботи + відпочинку всіх ${config.duration} вправ сумарно має приблизно дорівнювати ${config.duration} хвилинам.`;
 }
 
-function validateWorkout(raw: unknown): raw is Workout {
-  if (!raw || typeof raw !== 'object') return false;
+/**
+ * Перевіряє й нормалізує відповідь моделі: округлює секунди, відсіює
+ * від'ємні/нескінченні значення та явно некоректні тренування.
+ */
+function sanitizeWorkout(raw: unknown): Workout | null {
+  if (!raw || typeof raw !== 'object') return null;
   const w = raw as Record<string, unknown>;
-  if (!Array.isArray(w.exercises)) return false;
-  if (w.exercises.length < 1 || w.exercises.length > 20) return false;
+  if (!Array.isArray(w.exercises)) return null;
+  if (w.exercises.length < 1 || w.exercises.length > 20) return null;
+
+  const exercises: Exercise[] = [];
   for (const ex of w.exercises) {
     const e = ex as Record<string, unknown>;
-    if (typeof e.name !== 'string' || typeof e.description !== 'string') return false;
-    if (typeof e.workSeconds !== 'number' || typeof e.restSeconds !== 'number') return false;
+    if (typeof e.name !== 'string' || !e.name.trim()) return null;
+    if (typeof e.description !== 'string') return null;
+    if (typeof e.workSeconds !== 'number' || !Number.isFinite(e.workSeconds)) return null;
+    if (typeof e.restSeconds !== 'number' || !Number.isFinite(e.restSeconds)) return null;
+
+    const workSeconds = Math.round(e.workSeconds);
+    const restSeconds = Math.round(e.restSeconds);
+    if (workSeconds < 5 || workSeconds > 300) return null;
+    if (restSeconds < 0 || restSeconds > 120) return null;
+
+    exercises.push({
+      name: e.name.trim().slice(0, 120),
+      description: e.description.trim().slice(0, 400),
+      workSeconds,
+      restSeconds,
+    });
   }
-  if (typeof w.quote !== 'string') return false;
-  if (typeof w.estimatedCalories !== 'number') return false;
-  return true;
+
+  if (typeof w.quote !== 'string' || !w.quote.trim()) return null;
+  if (typeof w.estimatedCalories !== 'number' || !Number.isFinite(w.estimatedCalories)) {
+    return null;
+  }
+  const estimatedCalories = Math.round(w.estimatedCalories);
+  if (estimatedCalories < 1 || estimatedCalories > 3000) return null;
+
+  return {
+    exercises,
+    quote: w.quote.trim().slice(0, 300),
+    estimatedCalories,
+  };
 }
 
 function extractJson(text: string): unknown {
@@ -87,8 +119,12 @@ export async function generateWorkout(
   config: WorkoutConfig,
   apiKey: string,
   model: AiModel,
+  signal?: AbortSignal,
 ): Promise<Workout> {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
   const timeoutId = window.setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
 
   try {
@@ -120,8 +156,8 @@ export async function generateWorkout(
     const content: string | undefined = data?.choices?.[0]?.message?.content;
     if (!content) throw new Error('Порожня відповідь AI');
 
-    const parsed = extractJson(content);
-    if (!parsed || !validateWorkout(parsed)) {
+    const parsed = sanitizeWorkout(extractJson(content));
+    if (!parsed) {
       throw new Error('Невалідний формат відповіді');
     }
 
@@ -137,26 +173,56 @@ export async function generateWorkout(
     return parsed;
   } finally {
     window.clearTimeout(timeoutId);
+    signal?.removeEventListener('abort', abort);
   }
+}
+
+function abortError(): DOMException {
+  return new DOMException('Aborted', 'AbortError');
+}
+
+function describeAiError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const status = /OpenRouter (\d{3})/.exec(message)?.[1];
+  if (status) return `HTTP ${status}`;
+  if (/abort|timeout/i.test(message)) return 'таймаут';
+  if (message.includes('Невалідний')) return 'невалідна відповідь моделі';
+  if (message.includes('тривалості')) return 'невідповідна тривалість';
+  if (message.includes('Порожня')) return 'порожня відповідь моделі';
+  return 'помилка мережі';
 }
 
 export async function generateWorkoutWithFallback(
   config: WorkoutConfig,
   apiKey: string | null,
+  signal?: AbortSignal,
 ): Promise<GeneratedWorkout> {
   if (apiKey) {
+    let lastError: unknown = null;
     for (const model of AI_MODELS) {
+      if (signal?.aborted) throw abortError();
       try {
-        const workout = await generateWorkout(config, apiKey, model);
-        return { workout, source: 'ai', modelLabel: model.label };
+        const workout = await generateWorkout(config, apiKey, model, signal);
+        return { workout, source: 'ai', modelLabel: model.label, aiError: null };
       } catch (err) {
+        // Скасування користувачем — не вважаємо збоєм моделі
+        if (signal?.aborted) throw err;
+        lastError = err;
         console.warn(`AI model ${model.id} failed, trying next:`, err);
       }
     }
+    if (signal?.aborted) throw abortError();
+    return {
+      workout: generateMockWorkout(config),
+      source: 'mock',
+      modelLabel: null,
+      aiError: describeAiError(lastError),
+    };
   }
   return {
     workout: generateMockWorkout(config),
     source: 'mock',
     modelLabel: null,
+    aiError: null,
   };
 }

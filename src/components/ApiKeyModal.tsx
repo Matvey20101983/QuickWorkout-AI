@@ -61,7 +61,7 @@ export default function ApiKeyModal({ open, initialKey, onSave, onClose }: Props
           </div>
           <div>
             <h2 className="text-xl font-extrabold">OpenRouter API Key</h2>
-            <p className="text-sm text-gray-400">Зберігається у Supabase</p>
+            <p className="text-sm text-gray-400">Зберігається у цьому браузері</p>
           </div>
         </div>
 
@@ -86,8 +86,9 @@ export default function ApiKeyModal({ open, initialKey, onSave, onClose }: Props
         <div className="mt-3 flex items-start gap-2 rounded-lg bg-ink-800 p-3 text-xs text-gray-400">
           <ShieldCheck size={16} className="mt-0.5 shrink-0 text-acid" />
           <span>
-            Ключ шифрується та зберігається у Supabase. Без ключа тренування
-            генерується з вбудованого банку вправ — повністю офлайн.
+            Ключ зберігається локально у цьому браузері (за налаштованого Supabase —
+            синхронізується). Без ключа тренування генерується з вбудованого банку
+            вправ — повністю офлайн.
           </span>
         </div>
 
