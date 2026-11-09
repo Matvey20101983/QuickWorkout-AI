@@ -7,6 +7,7 @@ import {
   playRestStartBeep,
   playFinishBeep,
 } from '@/lib/sound';
+import type { HistoryEntry } from '@/lib/history';
 import { addWorkout } from '@/lib/history';
 
 export interface WorkoutMeta {
@@ -19,11 +20,12 @@ interface Props {
   workout: Workout;
   meta: WorkoutMeta;
   onReset: () => void;
+  onSaved?: (entry: HistoryEntry) => void;
 }
 
 type Phase = 'idle' | 'work' | 'rest' | 'done';
 
-export default function WorkoutSession({ workout, meta, onReset }: Props) {
+export default function WorkoutSession({ workout, meta, onReset, onSaved }: Props) {
   const [index, setIndex] = useState(0);
   const [phase, setPhase] = useState<Phase>('idle');
   const [secondsLeft, setSecondsLeft] = useState(0);
@@ -65,7 +67,7 @@ export default function WorkoutSession({ workout, meta, onReset }: Props) {
     // Історія пишеться рівно один раз — і після таймера, і після «Пропустити»
     if (!savedRef.current) {
       savedRef.current = true;
-      addWorkout({
+      const entry = addWorkout({
         duration: Math.max(1, Math.round(totalSeconds / 60)),
         zone: meta.zone,
         calories: workout.estimatedCalories,
@@ -73,8 +75,9 @@ export default function WorkoutSession({ workout, meta, onReset }: Props) {
         source: meta.source,
         skipped: skippedRef.current,
       });
+      onSaved?.(entry);
     }
-  }, [workout, meta, totalSeconds]);
+  }, [workout, meta, totalSeconds, onSaved]);
 
   const advance = useCallback(() => {
     const i = indexRef.current;

@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Dumbbell, Key, RotateCcw, Sparkles, Timer, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, Dumbbell, Key, RotateCcw, Sparkles, Timer, Trophy, Zap } from 'lucide-react';
 import ApiKeyModal from '@/components/ApiKeyModal';
 import ConfigPanel from '@/components/ConfigPanel';
 import WorkoutSession, { type WorkoutMeta } from '@/components/WorkoutSession';
 import { generateWorkoutWithFallback } from '@/lib/openrouter';
 import { getSupabaseUserId, supabase } from '@/lib/supabase';
+import {
+  BADGES,
+  evaluateBadges,
+  loadUnlocked,
+  type Badge,
+  type UnlockedMap,
+} from '@/lib/achievements';
+import { getHistory, getStats } from '@/lib/history';
 import type {
   DurationOption,
   EnergyLevel,
@@ -12,7 +20,7 @@ import type {
   Workout,
 } from '@/lib/types';
 
-type Screen = 'config' | 'success' | 'error';
+type Screen = 'config' | 'success' | 'error' | 'achievements';
 
 // Ключ зберігається лише локально й ніколи не надсилається в Supabase
 const API_KEY_STORAGE = 'quickworkout_supabase_key';
@@ -33,6 +41,9 @@ export default function App() {
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
+
+  const [unlockedBadges, setUnlockedBadges] = useState<UnlockedMap>(() => loadUnlocked());
+  const [newBadges, setNewBadges] = useState<Badge[]>([]);
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -122,6 +133,13 @@ export default function App() {
     setScreen('config');
   }
 
+  function handleWorkoutSaved() {
+    const entries = getHistory();
+    const { newlyUnlocked, unlocked } = evaluateBadges(entries);
+    setUnlockedBadges(unlocked);
+    if (newlyUnlocked.length) setNewBadges(newlyUnlocked);
+  }
+
   function handleReset() {
     setScreen('config');
     setWorkout(null);
@@ -129,6 +147,7 @@ export default function App() {
     setModelLabel(null);
     setMeta(null);
     setAiError(null);
+    setNewBadges([]);
   }
 
   function handleErrorReset() {
@@ -168,6 +187,14 @@ export default function App() {
             </div>
           </div>
 
+          <button
+            onClick={() => setScreen('achievements')}
+            className="tap-target flex shrink-0 items-center justify-center gap-2 rounded-xl border border-ink-500 bg-ink-700 px-3 py-2 text-sm font-semibold text-gray-300 transition hover:border-acid hover:text-acid active:scale-95"
+            aria-label="Досягнення"
+          >
+            <Trophy size={16} />
+            <span className="hidden sm:inline">Бейджі</span>
+          </button>
           <button
             onClick={() => setShowKeyModal(true)}
             className={`tap-target flex shrink-0 items-center justify-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition active:scale-95 ${
@@ -235,6 +262,14 @@ export default function App() {
         {/* SUCCESS STATE */}
         {screen === 'success' && workout && (
           <div className="animate-fade-up">
+            {newBadges.length > 0 && (
+              <div className="mb-4 flex items-start gap-2 rounded-xl border border-acid/40 bg-acid/10 p-3 text-xs text-acid-glow">
+                <Trophy size={16} className="mt-0.5 shrink-0" />
+                <span>
+                  Нове досягнення: {newBadges.map((b) => `${b.icon} ${b.title}`).join(', ')}
+                </span>
+              </div>
+            )}
             {source === 'mock' && aiError && (
               <div className="mb-4 flex items-start gap-2 rounded-xl border border-orange-500/40 bg-orange-500/10 p-3 text-xs text-orange-200">
                 <AlertTriangle size={16} className="mt-0.5 shrink-0" />
@@ -269,9 +304,82 @@ export default function App() {
               workout={workout}
               meta={meta ?? { zone, source: source ?? 'mock', modelLabel }}
               onReset={handleReset}
+              onSaved={handleWorkoutSaved}
             />
           </div>
         )}
+
+        {/* ACHIEVEMENTS */}
+        {screen === 'achievements' && (() => {
+          const entries = getHistory();
+          const stats = getStats();
+          const unlockedCount = Object.keys(unlockedBadges).length;
+          return (
+            <div className="animate-fade-up">
+              <div className="mb-5 flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Trophy className="shrink-0 text-acid" size={20} />
+                  <div className="min-w-0">
+                    <h2 className="truncate text-lg font-extrabold text-white sm:text-xl">
+                      Досягнення
+                    </h2>
+                    <p className="truncate text-[11px] text-gray-400 sm:text-xs">
+                      Відкрито {unlockedCount} з {BADGES.length} · {stats.totalTrainings} тренувань
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setScreen('config')}
+                  className="tap-target flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-ink-500 bg-ink-700 px-3 py-2 text-xs font-semibold text-gray-300 transition hover:border-acid hover:text-acid active:scale-95"
+                >
+                  <RotateCcw size={14} /> Назад
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {BADGES.map((badge) => {
+                  const unlocked = !!unlockedBadges[badge.id];
+                  const progress = badge.progress(entries, stats);
+                  return (
+                    <div
+                      key={badge.id}
+                      className={`rounded-2xl border p-4 transition ${
+                        unlocked
+                          ? 'border-acid bg-acid/10 shadow-acid-glow'
+                          : 'border-ink-500 bg-ink-700/60'
+                      }`}
+                    >
+                      <div className="text-3xl">{badge.icon}</div>
+                      <div
+                        className={`mt-2 text-sm font-bold ${unlocked ? 'text-acid-glow' : 'text-white'}`}
+                      >
+                        {badge.title}
+                      </div>
+                      <div className="mt-1 text-[11px] text-gray-400">{badge.description}</div>
+                      {unlocked ? (
+                        <div className="mt-2 text-[10px] text-acid">
+                          Відкрито {unlockedBadges[badge.id]}
+                        </div>
+                      ) : (
+                        <div className="mt-2">
+                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-ink-800">
+                            <div
+                              className="h-full bg-acid/60 transition-all"
+                              style={{ width: `${Math.round(progress * 100)}%` }}
+                            />
+                          </div>
+                          <div className="mt-1 text-[10px] text-gray-500">
+                            {Math.round(progress * 100)}%
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ERROR STATE */}
         {screen === 'error' && (
