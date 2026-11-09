@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, Download, Dumbbell, Key, RotateCcw, Sparkles, Timer, Trash2, Trophy, Upload, User, Zap } from 'lucide-react';
 import ApiKeyModal from '@/components/ApiKeyModal';
 import ConfigPanel from '@/components/ConfigPanel';
@@ -28,7 +28,7 @@ type Screen = 'config' | 'success' | 'error' | 'achievements' | 'profile';
 const API_KEY_STORAGE = 'quickworkout_supabase_key';
 
 export default function App() {
-  const initialSettings = loadSettings();
+  const initialSettings = useMemo(() => loadSettings(), []);
   const [energy, setEnergy] = useState<EnergyLevel>(initialSettings.defaultEnergy);
   const [duration, setDuration] = useState<DurationOption>(initialSettings.defaultDuration);
   const [zone, setZone] = useState<TargetZone>(initialSettings.defaultZone);
@@ -137,12 +137,12 @@ export default function App() {
     setScreen('config');
   }
 
-  function handleWorkoutSaved() {
+  const handleWorkoutSaved = useCallback(() => {
     const entries = getHistory();
     const { newlyUnlocked, unlocked } = evaluateBadges(entries);
     setUnlockedBadges(unlocked);
     if (newlyUnlocked.length) setNewBadges(newlyUnlocked);
-  }
+  }, []);
 
   function handleReset() {
     setScreen('config');
