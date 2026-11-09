@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Dumbbell, Key, RotateCcw, Sparkles, Timer, Trophy, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, Download, Dumbbell, Key, RotateCcw, Sparkles, Timer, Trash2, Trophy, Upload, User, Zap } from 'lucide-react';
 import ApiKeyModal from '@/components/ApiKeyModal';
 import ConfigPanel from '@/components/ConfigPanel';
 import WorkoutSession, { type WorkoutMeta } from '@/components/WorkoutSession';
@@ -13,22 +13,25 @@ import {
   type UnlockedMap,
 } from '@/lib/achievements';
 import { getHistory, getStats } from '@/lib/history';
+import { loadSettings, saveSettings, type AppSettings } from '@/lib/settings';
 import type {
   DurationOption,
   EnergyLevel,
   TargetZone,
   Workout,
 } from '@/lib/types';
+import { DURATION_OPTIONS, ENERGY_LABELS, TARGET_ZONES } from '@/lib/types';
 
-type Screen = 'config' | 'success' | 'error' | 'achievements';
+type Screen = 'config' | 'success' | 'error' | 'achievements' | 'profile';
 
 // Ключ зберігається лише локально й ніколи не надсилається в Supabase
 const API_KEY_STORAGE = 'quickworkout_supabase_key';
 
 export default function App() {
-  const [energy, setEnergy] = useState<EnergyLevel>(3);
-  const [duration, setDuration] = useState<DurationOption>(12);
-  const [zone, setZone] = useState<TargetZone>('full_body');
+  const initialSettings = loadSettings();
+  const [energy, setEnergy] = useState<EnergyLevel>(initialSettings.defaultEnergy);
+  const [duration, setDuration] = useState<DurationOption>(initialSettings.defaultDuration);
+  const [zone, setZone] = useState<TargetZone>(initialSettings.defaultZone);
 
   const [screen, setScreen] = useState<Screen>('config');
   const [workout, setWorkout] = useState<Workout | null>(null);
@@ -44,6 +47,7 @@ export default function App() {
 
   const [unlockedBadges, setUnlockedBadges] = useState<UnlockedMap>(() => loadUnlocked());
   const [newBadges, setNewBadges] = useState<Badge[]>([]);
+  const [settings, setSettings] = useState<AppSettings>(initialSettings);
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -150,6 +154,60 @@ export default function App() {
     setNewBadges([]);
   }
 
+  function updateSettings(patch: Partial<AppSettings>) {
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    saveSettings(next);
+  }
+
+  function handleClearHistory() {
+    if (!window.confirm('Видалити всю історію тренувань? Дію не можна скасувати.')) return;
+    localStorage.removeItem('quickworkout_history');
+  }
+
+  function handleClearBadges() {
+    if (!window.confirm('Скинути всі досягнення?')) return;
+    localStorage.removeItem('quickworkout_badges');
+    setUnlockedBadges({});
+  }
+
+  function handleExport() {
+    const data = { history: getHistory(), badges: loadUnlocked(), settings };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'quickworkout-backup.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function handleImportFile(file: File | null) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result));
+        if (Array.isArray(data?.history)) {
+          localStorage.setItem('quickworkout_history', JSON.stringify(data.history));
+        }
+        if (data?.badges && typeof data.badges === 'object' && !Array.isArray(data.badges)) {
+          localStorage.setItem('quickworkout_badges', JSON.stringify(data.badges));
+          setUnlockedBadges(data.badges);
+        }
+        if (data?.settings && typeof data.settings === 'object') {
+          updateSettings(data.settings);
+        }
+        window.alert('Імпортовано успішно.');
+      } catch {
+        window.alert('Невірний файл резервної копії.');
+      }
+    };
+    reader.readAsText(file);
+  }
+
   function handleErrorReset() {
     setScreen('config');
   }
@@ -187,6 +245,14 @@ export default function App() {
             </div>
           </div>
 
+          <button
+            onClick={() => setScreen('profile')}
+            className="tap-target flex shrink-0 items-center justify-center gap-2 rounded-xl border border-ink-500 bg-ink-700 px-3 py-2 text-sm font-semibold text-gray-300 transition hover:border-acid hover:text-acid active:scale-95"
+            aria-label="Профіль"
+          >
+            <User size={16} />
+            <span className="hidden sm:inline">Профіль</span>
+          </button>
           <button
             onClick={() => setScreen('achievements')}
             className="tap-target flex shrink-0 items-center justify-center gap-2 rounded-xl border border-ink-500 bg-ink-700 px-3 py-2 text-sm font-semibold text-gray-300 transition hover:border-acid hover:text-acid active:scale-95"
@@ -308,6 +374,179 @@ export default function App() {
             />
           </div>
         )}
+
+        {/* PROFILE */}
+        {screen === 'profile' && (() => {
+          const stats = getStats();
+          const unlockedCount = Object.keys(unlockedBadges).length;
+          const weekProgress = Math.min(100, Math.round((stats.last7Days / Math.max(1, settings.weeklyGoal)) * 100));
+          return (
+            <div className="animate-fade-up space-y-5">
+              <div className="mb-5 flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <User className="shrink-0 text-acid" size={20} />
+                  <div className="min-w-0">
+                    <h2 className="truncate text-lg font-extrabold text-white sm:text-xl">Профіль</h2>
+                    <p className="truncate text-[11px] text-gray-400 sm:text-xs">Налаштування та статистика</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setScreen('config')}
+                  className="tap-target flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-ink-500 bg-ink-700 px-3 py-2 text-xs font-semibold text-gray-300 transition hover:border-acid hover:text-acid active:scale-95"
+                >
+                  <RotateCcw size={14} /> Назад
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {[
+                  { label: 'Тренувань', value: stats.totalTrainings },
+                  { label: 'Хвилин', value: stats.totalMinutes },
+                  { label: 'Ккал', value: stats.totalCalories },
+                  { label: 'Стрік', value: stats.currentStreak },
+                ].map((c) => (
+                  <div key={c.label} className="rounded-2xl border border-ink-500 bg-ink-700/60 p-4 text-center">
+                    <div className="text-display text-2xl font-bold text-white">{c.value}</div>
+                    <div className="mt-1 text-[10px] uppercase tracking-wider text-gray-500">{c.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="rounded-2xl border border-ink-500 bg-ink-700/60 p-4 sm:p-5">
+                <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-gray-200">Ціль на тиждень</h3>
+                <div className="mb-2 flex items-center justify-between text-sm">
+                  <span className="text-gray-300">{stats.last7Days} з {settings.weeklyGoal} тренувань</span>
+                  <span className="font-bold text-acid">{weekProgress}%</span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-ink-800">
+                  <div className="h-full bg-acid transition-all" style={{ width: `${weekProgress}%` }} />
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="text-xs text-gray-400">Ціль:</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={14}
+                    value={settings.weeklyGoal}
+                    onChange={(e) =>
+                      updateSettings({ weeklyGoal: Math.max(1, Math.min(14, Number(e.target.value) || 1)) })
+                    }
+                    className="w-16 rounded-lg border border-ink-500 bg-ink-800 px-2 py-1 text-sm text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-ink-500 bg-ink-700/60 p-4 sm:p-5">
+                <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-gray-200">Значення за замовчуванням</h3>
+                <div className="space-y-3">
+                  <div>
+                    <div className="mb-1 text-[11px] text-gray-400">Зона</div>
+                    <div className="flex flex-wrap gap-2">
+                      {TARGET_ZONES.map((z) => (
+                        <button
+                          key={z.value}
+                          onClick={() => updateSettings({ defaultZone: z.value })}
+                          className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                            settings.defaultZone === z.value
+                              ? 'border-acid bg-acid/15 text-acid'
+                              : 'border-ink-500 bg-ink-800 text-gray-300'
+                          }`}
+                        >
+                          {z.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-[11px] text-gray-400">Тривалість</div>
+                    <div className="flex flex-wrap gap-2">
+                      {DURATION_OPTIONS.map((d) => (
+                        <button
+                          key={d.value}
+                          onClick={() => updateSettings({ defaultDuration: d.value })}
+                          className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                            settings.defaultDuration === d.value
+                              ? 'border-neon bg-neon/15 text-neon'
+                              : 'border-ink-500 bg-ink-800 text-gray-300'
+                          }`}
+                        >
+                          {d.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-[11px] text-gray-400">Енергія</div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={5}
+                      step={1}
+                      value={settings.defaultEnergy}
+                      onChange={(e) => updateSettings({ defaultEnergy: Number(e.target.value) as EnergyLevel })}
+                      className="w-full"
+                    />
+                    <div className="text-xs text-gray-400">{ENERGY_LABELS[settings.defaultEnergy]}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-ink-500 bg-ink-700/60 p-4 sm:p-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-gray-200">Досягнення</h3>
+                    <p className="mt-1 text-sm text-gray-300">Відкрито {unlockedCount} з {BADGES.length}</p>
+                  </div>
+                  <button
+                    onClick={() => setScreen('achievements')}
+                    className="rounded-lg border border-ink-500 bg-ink-800 px-3 py-1.5 text-xs font-semibold text-gray-300 transition hover:border-acid hover:text-acid"
+                  >
+                    Переглянути
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-ink-500 bg-ink-700/60 p-4 sm:p-5">
+                <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-gray-200">Дані</h3>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={handleExport}
+                    className="flex items-center gap-1.5 rounded-lg border border-ink-500 bg-ink-800 px-3 py-2 text-xs font-semibold text-gray-300 transition hover:border-acid hover:text-acid"
+                  >
+                    <Download size={14} /> Експорт
+                  </button>
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-1.5 rounded-lg border border-ink-500 bg-ink-800 px-3 py-2 text-xs font-semibold text-gray-300 transition hover:border-acid hover:text-acid"
+                  >
+                    <Upload size={14} /> Імпорт
+                  </button>
+                  <button
+                    onClick={handleClearHistory}
+                    className="flex items-center gap-1.5 rounded-lg border border-ink-500 bg-ink-800 px-3 py-2 text-xs font-semibold text-gray-300 transition hover:border-orange-500 hover:text-orange-400"
+                  >
+                    <Trash2 size={14} /> Очистити історію
+                  </button>
+                  <button
+                    onClick={handleClearBadges}
+                    className="flex items-center gap-1.5 rounded-lg border border-ink-500 bg-ink-800 px-3 py-2 text-xs font-semibold text-gray-300 transition hover:border-orange-500 hover:text-orange-400"
+                  >
+                    <Trash2 size={14} /> Скинути бейджі
+                  </button>
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="application/json"
+                  className="hidden"
+                  onChange={(e) => handleImportFile(e.target.files?.[0] ?? null)}
+                />
+              </div>
+
+              <div className="text-center text-[11px] text-gray-600">QuickWorkout AI · локальне зберігання · v0.1</div>
+            </div>
+          );
+        })()}
 
         {/* ACHIEVEMENTS */}
         {screen === 'achievements' && (() => {
