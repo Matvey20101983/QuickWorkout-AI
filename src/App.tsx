@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Download, Dumbbell, Key, RotateCcw, Sparkles, Timer, Trash2, Trophy, Upload, User, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, CalendarDays, Download, Dumbbell, Key, RotateCcw, Sparkles, Timer, Trash2, Trophy, Upload, User, Zap } from 'lucide-react';
 import ApiKeyModal from '@/components/ApiKeyModal';
+import Calendar from '@/components/Calendar';
 import ConfigPanel from '@/components/ConfigPanel';
 import WorkoutSession, { type WorkoutMeta } from '@/components/WorkoutSession';
 import { generateWorkoutWithFallback } from '@/lib/openrouter';
@@ -22,7 +23,7 @@ import type {
 } from '@/lib/types';
 import { DURATION_OPTIONS, ENERGY_LABELS, TARGET_ZONES } from '@/lib/types';
 
-type Screen = 'config' | 'success' | 'error' | 'achievements' | 'profile';
+type Screen = 'config' | 'success' | 'error' | 'achievements' | 'profile' | 'calendar';
 
 // Ключ зберігається лише локально й ніколи не надсилається в Supabase
 const API_KEY_STORAGE = 'quickworkout_supabase_key';
@@ -252,6 +253,14 @@ export default function App() {
           >
             <User size={16} />
             <span className="hidden sm:inline">Профіль</span>
+          </button>
+          <button
+            onClick={() => setScreen('calendar')}
+            className="tap-target flex shrink-0 items-center justify-center gap-2 rounded-xl border border-ink-500 bg-ink-700 px-3 py-2 text-sm font-semibold text-gray-300 transition hover:border-acid hover:text-acid active:scale-95"
+            aria-label="Календар"
+          >
+            <CalendarDays size={16} />
+            <span className="hidden sm:inline">Календар</span>
           </button>
           <button
             onClick={() => setScreen('achievements')}
@@ -547,6 +556,9 @@ export default function App() {
             </div>
           );
         })()}
+
+        {/* CALENDAR */}
+        {screen === 'calendar' && <Calendar onBack={() => setScreen('config')} />}
 
         {/* ACHIEVEMENTS */}
         {screen === 'achievements' && (() => {
